@@ -1,0 +1,175 @@
+trigger: none
+pool: vik-agent-pool
+
+variables:
+  - name: dir
+    value: $(System.DefaultWorkingDirectory)/Environment
+
+parameters:
+  - name: env
+    type: string
+    values:
+    - prod
+    - test
+
+stages:
+- stage: installation
+
+  displayName: Installtion
+  jobs:
+  - job:
+    displayName: terraform Installation
+    steps:
+    - task: TerraformInstaller@1
+      inputs:
+        terraformVersion: 'latest'
+
+- stage: preinit 
+  displayName: Pre Init
+  jobs:
+  - job: Init
+    displayName: Terraform Init
+    steps:
+    - task: TerraformTask@5
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(dir)/${{ parameters.env }}'
+        backendServiceArm: 'vik-service-connection'
+        backendAzureRmStorageAccountName: 'tfstoragefile'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: '${{ parameters.env }}.nik.tfstate'
+    - task: TerraformTask@5
+      inputs:
+        provider: 'azurerm'
+        command: 'validate'
+        workingDirectory: '$(dir)/${{ parameters.env }}'
+  - job: Fmt
+    displayName: Terraform Fmt
+    steps:
+    - task: TerraformTask@5
+      inputs:
+        provider: 'azurerm'
+        command: 'custom'
+        workingDirectory: '$(dir)/${{ parameters.env }}'
+        outputTo: 'console'
+        customCommand: 'fmt'
+        environmentServiceNameAzureRM: 'vik-service-connection'
+
+- stage: lint
+  displayName: linting
+  jobs:
+  - job: init
+    displayName: init
+    continueOnError: true
+    steps:
+    - task: TerraformTask@5
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(dir)/${{ parameters.env }}'
+        backendServiceArm: 'vik-service-connection'
+        backendAzureRmStorageAccountName: 'tfstoragefile'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: '${{ parameters.env }}.nik.tfstate'
+
+  - job: scan
+    displayName: tfsec
+    dependsOn: init
+    continueOnError: true
+    steps:
+    - task: tfsec@1
+      inputs:
+        version: 'v1.26.0'
+        dir: '$(dir)/${{ parameters.env }}'
+
+  - job: lint
+
+    dependsOn: scan
+    displayName: tflint
+    continueOnError: true
+    steps:
+    - task: PowerShell@2
+      inputs:
+        targetType: 'inline'
+        script: |
+          Invoke-WebRequest -Uri "https://github.com/terraform-linters/tflint/releases/latest/download/tflint_windows_amd64.zip" -OutFile "tflint.zip"
+          New-Item -ItemType Directory -Force -Path "tflint"
+          Expand-Archive -Path "tflint.zip" -DestinationPath "tflint" -Force
+          $env:PATH += ";$PWD\tflint"
+          tflint --version
+          cd '$(dir)/${{ parameters.env }}'
+          tflint --chdir .   
+
+- stage: costestimation
+  displayName: cost estimation
+  jobs:  
+    - job: infracost
+      displayName: Infracost
+      steps:
+      - task: InfracostSetup@2
+        inputs:
+          apiKey: 'MY_API_KEY'
+          version: '0.10.x'
+
+- stage: plan
+  displayName: Planning
+  jobs:
+  - job: Plan
+    displayName: terraform plan
+    steps:
+    - task: TerraformTask@5
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(dir)/${{ parameters.env }}'
+        backendServiceArm: 'vik-service-connection'
+        backendAzureRmStorageAccountName: 'tfstoragefile'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: '${{ parameters.env }}.nik.tfstate'
+    - task: TerraformTask@5
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(dir)/${{ parameters.env }}'
+        environmentServiceNameAzureRM: 'vik-service-connection'
+
+- stage: validation
+  displayName: Manual Validation
+  jobs:
+    - job: Approval
+      displayName: Manager's Approval
+      pool: server
+      steps:
+      - task: ManualValidation@1
+        inputs:
+          notifyUsers: 'vikasshri1998@gmail.com'
+
+- stage: deploy
+  displayName: deployment
+  jobs:
+    - job: build
+      displayName: infra deployment
+      steps:
+      - task: TerraformTask@5
+        inputs:
+          provider: 'azurerm'
+          command: 'init'
+          workingDirectory: '$(dir)/${{ parameters.env }}'
+          backendServiceArm: 'vik-service-connection'
+          backendAzureRmStorageAccountName: 'tfstoragefile'
+          backendAzureRmContainerName: 'tfstate'
+          backendAzureRmKey: '${{ parameters.env }}.nik.tfstate'
+      - task: TerraformTask@5
+        inputs:
+          provider: 'azurerm'
+          command: 'apply'
+          workingDirectory: '$(dir)/${{ parameters.env }}'
+          environmentServiceNameAzureRM: 'vik-service-connection'
+
+
+
+
+
+    
+
